@@ -51,6 +51,12 @@ public class BlackwoodSolver {
     // conflict tracker's own floor is 248. Keep these two numbers in step (their comment says the
     // same thing back).
     private static final int DEFAULT_SAVE_THRESHOLD = 248;
+    // See BlackwoodGpuRunner's ALWAYS_SAVE_AT_OR_BELOW (Eternity2_GPU repo) for the full rationale:
+    // the save/retention window is normally "within 1 of best-on-disk", which tightens forever as
+    // the record improves. This floor keeps <=12 permanently save-worthy regardless. Mirror any
+    // change in the GPU repo's copy of this file and its BlackwoodGpuRunner.java, and in Util.cs's
+    // PruneAboveThreshold.
+    private static final int ALWAYS_SAVE_AT_OR_BELOW = parseIntEnv("ETERNITY_SAVE_FLOOR", 12);
     private static final int ATTEMPTS_PER_WORKER_PER_BATCH = 5;
     // Matches the C# solver's / GPU runner's own trial count for HoleSolver's completion pass.
     private static final int SCORING_TRIALS = 5000;
@@ -395,7 +401,8 @@ public class BlackwoodSolver {
             boolean exact = result.repairedBoard() == null;
             boolean budgetExhausted = result.anyRegionBudgetExhausted();
             int bestOnDisk = bestConflictsOnDisk(outputDir);
-            int keepThreshold = (bestOnDisk == Integer.MAX_VALUE) ? Integer.MAX_VALUE : bestOnDisk + 1;
+            int keepThreshold = (bestOnDisk == Integer.MAX_VALUE)
+                    ? Integer.MAX_VALUE : Math.max(ALWAYS_SAVE_AT_OR_BELOW, bestOnDisk + 1);
             if (conflicts > keepThreshold) {
                 logger.info("Depth record at {} pieces completed to {} conflicts -- not within 1 of best-on-disk ({}), not saving, exact={}, budgetExhausted={}",
                         maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted);
@@ -443,6 +450,17 @@ public class BlackwoodSolver {
                     java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
         } catch (IOException e) {
             logger.warn("Could not append to {}", COMPLETED_LINKS_LOG, e);
+        }
+    }
+
+    private static int parseIntEnv(String name, int defaultValue) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) return defaultValue;
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            System.err.println("Ignoring invalid " + name + "=" + v + ", using default " + defaultValue);
+            return defaultValue;
         }
     }
 
@@ -495,7 +513,8 @@ public class BlackwoodSolver {
             }
             if (conflictsByFile.isEmpty()) return;
 
-            int keepThreshold = conflictsByFile.values().stream().mapToInt(Integer::intValue).min().orElse(0) + 1;
+            int minOnDisk = conflictsByFile.values().stream().mapToInt(Integer::intValue).min().orElse(0);
+            int keepThreshold = Math.max(ALWAYS_SAVE_AT_OR_BELOW, minOnDisk + 1);
             for (Map.Entry<Path, Integer> entry : conflictsByFile.entrySet()) {
                 if (entry.getValue() <= keepThreshold) continue;
                 Path rawBoardFile = entry.getKey();
