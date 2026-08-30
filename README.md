@@ -45,7 +45,7 @@ java -cp "target/classes:$(cat cp.txt)" dk.puzzle.blackwood.BlackwoodSolver
 
 (On Windows the classpath separator is `;` rather than `:`.)
 
-Saved boards land in `~/EternitySolutions_JavaPort/` as three files per board: a bucas-linked
+Saved boards land in `~/EternitySolutions_JavaCPU/` as three files per board: a bucas-linked
 raw board, a physical piece layout, and a Blackwood-numbered baseboard.
 
 ## Configuration

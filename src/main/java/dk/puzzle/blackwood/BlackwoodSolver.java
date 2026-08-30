@@ -127,9 +127,9 @@ public class BlackwoodSolver {
         // Move on this machine (see commit 9286a98, "Move C# board output off OneDrive": 389,856
         // synced files, ~1GB, filled the quota before anyone noticed). UserProfile itself is never
         // touched by KFM, so this stays local -- same convention as the GPU runner's
-        // ~/EternitySolutions_GpuBlackwood and the C# solver's ~/EternitySolutions, just with its
+        // ~/EternitySolutions_GPU and the C# solver's ~/EternitySolutions_CSharpCPU, just with its
         // own suffix so provenance of any given save file is still unambiguous.
-        return Path.of(System.getProperty("user.home"), "EternitySolutions_JavaPort");
+        return Path.of(System.getProperty("user.home"), "EternitySolutions_JavaCPU");
     }
 
     private static int defaultWorkerCount() {
