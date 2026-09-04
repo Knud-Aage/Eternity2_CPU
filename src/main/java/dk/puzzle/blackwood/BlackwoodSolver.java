@@ -50,7 +50,15 @@ public class BlackwoodSolver {
     // vs the 12-conflict record) that flooded OneDrive and that nothing downstream reads -- the
     // conflict tracker's own floor is 248. Keep these two numbers in step (their comment says the
     // same thing back).
-    private static final int DEFAULT_SAVE_THRESHOLD = 248;
+    //
+    // 2026-09-04: lowered 248 -> 240 for the hints-enabled search specifically, which (post
+    // step-34 fix) consistently lands attempts in the 238-246 range without yet clearing 248 --
+    // this trades some CPU on HoleSolver's repair pass for visibility into where those attempts
+    // actually land, on the assumption most won't beat the existing 13/14-conflict record and
+    // therefore won't actually get written to disk (see keepThreshold below), so this isn't
+    // expected to reproduce the original flood. This repo only -- deliberately NOT ported to the
+    // GPU/C# solvers this time.
+    private static final int DEFAULT_SAVE_THRESHOLD = 240;
     // See BlackwoodGpuRunner's ALWAYS_SAVE_AT_OR_BELOW (Eternity2_GPU repo) for the full rationale:
     // the save/retention window is normally "within 1 of best-on-disk", which tightens forever as
     // the record improves. This floor keeps <=12 permanently save-worthy regardless. Mirror any
