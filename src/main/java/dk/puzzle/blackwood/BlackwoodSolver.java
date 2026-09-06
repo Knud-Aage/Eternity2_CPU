@@ -59,12 +59,11 @@ public class BlackwoodSolver {
     // expected to reproduce the original flood. This repo only -- deliberately NOT ported to the
     // GPU/C# solvers this time.
     private static final int DEFAULT_SAVE_THRESHOLD = 240;
-    // See BlackwoodGpuRunner's ALWAYS_SAVE_AT_OR_BELOW (Eternity2_GPU repo) for the full rationale:
+    // See BlackwoodGpuRunner's alwaysSaveAtOrBelow() (Eternity2_GPU repo) for the full rationale:
     // the save/retention window is normally "within 1 of best-on-disk", which tightens forever as
-    // the record improves. This floor keeps <=12 permanently save-worthy regardless. Mirror any
-    // change in the GPU repo's copy of this file and its BlackwoodGpuRunner.java, and in Util.cs's
-    // PruneAboveThreshold.
-    private static final int ALWAYS_SAVE_AT_OR_BELOW = parseIntEnv("ETERNITY_SAVE_FLOOR", 12);
+    // the record improves. This floor keeps results at or below it permanently save-worthy
+    // regardless. Mirror any change in the GPU repo's copy of this file and its
+    // BlackwoodGpuRunner.java, and in Util.cs's PruneAboveThreshold.
     private static final int ATTEMPTS_PER_WORKER_PER_BATCH = 5;
     // Matches the C# solver's / GPU runner's own trial count for HoleSolver's completion pass.
     private static final int SCORING_TRIALS = 5000;
@@ -488,7 +487,7 @@ public class BlackwoodSolver {
             boolean budgetExhausted = result.anyRegionBudgetExhausted();
             int bestOnDisk = bestConflictsOnDisk(outputDir);
             int keepThreshold = (bestOnDisk == Integer.MAX_VALUE)
-                    ? Integer.MAX_VALUE : Math.max(ALWAYS_SAVE_AT_OR_BELOW, bestOnDisk + 1);
+                    ? Integer.MAX_VALUE : Math.max(alwaysSaveAtOrBelow(), bestOnDisk + 1);
             if (conflicts > keepThreshold) {
                 logger.info("Depth record at {} pieces completed to {} conflicts -- not within 1 of best-on-disk ({}), not saving, exact={}, budgetExhausted={}",
                         maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted);
@@ -550,6 +549,16 @@ public class BlackwoodSolver {
         }
     }
 
+    // 2026-09-06: the permanently-save-worthy floor now depends on which regime is running -- see
+    // BlackwoodGpuRunner's alwaysSaveAtOrBelow() for the full rationale (12 for no-hints, 18 for
+    // the five-clue regime). A method, not a static final field: NON_CENTER_HINTS_ENABLED is
+    // deliberately mutable (tests flip it after class-load), and it's declared AFTER this point in
+    // the file, so a field initializer here would read its default (false) at class-init time
+    // instead of the real value -- reading it inside a method sidesteps that entirely.
+    private static int alwaysSaveAtOrBelow() {
+        return parseIntEnv("ETERNITY_SAVE_FLOOR", NON_CENTER_HINTS_ENABLED ? 18 : 12);
+    }
+
     private static long parseLongEnv(String name, long defaultValue) {
         String v = System.getenv(name);
         if (v == null || v.isBlank()) return defaultValue;
@@ -600,7 +609,7 @@ public class BlackwoodSolver {
             if (conflictsByFile.isEmpty()) return;
 
             int minOnDisk = conflictsByFile.values().stream().mapToInt(Integer::intValue).min().orElse(0);
-            int keepThreshold = Math.max(ALWAYS_SAVE_AT_OR_BELOW, minOnDisk + 1);
+            int keepThreshold = Math.max(alwaysSaveAtOrBelow(), minOnDisk + 1);
             for (Map.Entry<Path, Integer> entry : conflictsByFile.entrySet()) {
                 if (entry.getValue() <= keepThreshold) continue;
                 Path rawBoardFile = entry.getKey();
