@@ -114,6 +114,58 @@ public class BlackwoodSolver {
             new HintPin(249, 2, 13, 0),  // 90 deg -- was 3 (0 deg)
             new HintPin(208, 13, 2, 3),  // 0 deg -- was 2 (270 deg)
             new HintPin(255, 13, 13, 3));// 0 deg -- was 2 (270 deg)
+
+    /**
+     * Eighteen (piece, cell, rotation) placements proven impossible under the strict-five-clue
+     * regime by exhaustive SAT/DRAT certificate: Horvath, "Eighteen Certified Impossible
+     * Placements in Eternity II with the Five Official Clues Fixed",
+     * github.com/blackencino/eternity-ii-negative-facts, field/certificates/manifest.json.
+     * Fields are given exactly as published there: pieceNumber is 1-256, x/yFromTop are 0-based
+     * board coordinates from the left/top, orientation is the paper's own 0-3 CCW-from-reference
+     * convention (their field/e2_candidate_cnf.py, oriented_edges()).
+     * <p>
+     * 2026-09-07: ported from Eternity2_GPU's BlackwoodSolver, where this table and its two
+     * conversions were verified against all 5 of our own already-corrected official clue
+     * placements (HINT_PINS above) -- the paper's own hardcoded HINTS tuples (same file) convert,
+     * cell-for-cell and rotation-for-rotation, to exactly our HINT_PINS entry for that piece, for
+     * all 5 clues. This repo has no rotated-instance feature, so unlike the GPU repo the gate
+     * below only needs to check NON_CENTER_HINTS_ENABLED. This repo also has no GPU table layer
+     * (no BwGpuTables here), so unlike Eternity2_GPU this is wired directly into prepare() --
+     * BlackwoodSolver.main() below IS the live search, nothing else stands between it and
+     * masterPieceLookup.
+     */
+    private record NegativeFact(int pieceNumber, int x, int yFromTop, int orientation) {
+        /** masterPieceLookup's row runs bottom-up (row 15 = top row, see the loop in prepare()). */
+        int masterPieceLookupIndex() {
+            return (15 - yFromTop) * 16 + x;
+        }
+
+        /** Our BwRotatedPiece.rotations() scale is the paper's orientation, negated mod 4. */
+        int requiredRotation() {
+            return (4 - orientation) % 4;
+        }
+    }
+
+    private static final List<NegativeFact> NEGATIVE_FACTS = List.of(
+            new NegativeFact(122, 1, 14, 1),
+            new NegativeFact(149, 3, 14, 1),
+            new NegativeFact(212, 3, 14, 0),
+            new NegativeFact(124, 14, 14, 2),
+            new NegativeFact(149, 14, 12, 2),
+            new NegativeFact(212, 14, 12, 1),
+            new NegativeFact(124, 14, 3, 3),
+            new NegativeFact(131, 3, 1, 1),
+            new NegativeFact(161, 3, 1, 1),
+            new NegativeFact(177, 3, 1, 3),
+            new NegativeFact(192, 3, 1, 1),
+            new NegativeFact(244, 3, 1, 0),
+            new NegativeFact(250, 3, 1, 3),
+            new NegativeFact(112, 12, 1, 0),
+            new NegativeFact(198, 12, 1, 3),
+            new NegativeFact(236, 12, 1, 1),
+            new NegativeFact(131, 14, 1, 1),
+            new NegativeFact(161, 14, 1, 1));
+
     // 2026-08-19: labelled save format, matching the GPU runner and C# solver -- conflicts first
     // in the name so the three engines' output is directly comparable at a glance, and so
     // BwSeedLoader (which already recognizes this exact pattern) can use this port's own best
@@ -300,6 +352,43 @@ public class BlackwoodSolver {
             } else {
                 masterPieceLookup[row * 16 + col] = (i < firstBreakIndex) ? middlesNoBreak : middlesWithBreak;
             }
+        }
+        applyNegativeFacts();
+    }
+
+    /**
+     * Removes the 18 NEGATIVE_FACTS placements from their specific cells only. Several
+     * masterPieceLookup entries above are shared BY REFERENCE (middlesNoBreak, middlesWithBreak,
+     * etc.) across many cells, so each affected cell gets its own filtered clone here rather than
+     * mutating a shared table -- otherwise a fact proven for one cell would wrongly also strip
+     * that (piece, rotation) from every other cell reusing the same table object. Safe to call
+     * unconditionally here (unlike Eternity2_GPU): this repo has no GPU table layer expecting
+     * masterPieceLookup entries to be reference-identical to a fixed set of table objects.
+     */
+    private void applyNegativeFacts() {
+        if (!NON_CENTER_HINTS_ENABLED) {
+            return; // the proof assumes all five clues fixed at their official position/rotation
+        }
+        Map<Integer, List<NegativeFact>> factsByCell = new HashMap<>();
+        for (NegativeFact fact : NEGATIVE_FACTS) {
+            factsByCell.computeIfAbsent(fact.masterPieceLookupIndex(), k -> new ArrayList<>()).add(fact);
+        }
+        for (Map.Entry<Integer, List<NegativeFact>> entry : factsByCell.entrySet()) {
+            int mplIndex = entry.getKey();
+            List<NegativeFact> excluded = entry.getValue();
+            BwRotatedPiece[][] original = masterPieceLookup[mplIndex];
+            if (original == null) {
+                continue;
+            }
+            BwRotatedPiece[][] filtered = new BwRotatedPiece[original.length][];
+            for (int bucket = 0; bucket < original.length; bucket++) {
+                BwRotatedPiece[] candidates = original[bucket];
+                filtered[bucket] = candidates == null ? null : Arrays.stream(candidates)
+                        .filter(c -> excluded.stream().noneMatch(
+                                f -> f.pieceNumber() == c.pieceNumber() && f.requiredRotation() == c.rotations()))
+                        .toArray(BwRotatedPiece[]::new);
+            }
+            masterPieceLookup[mplIndex] = filtered;
         }
     }
 
