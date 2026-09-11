@@ -113,6 +113,33 @@ class BwUtilTest {
     }
 
     @Test
+    void testWestFacingAndSouthFacingMatchGetRotatedPiecesForEveryRotation() {
+        // Cross-checks the reverse lookup against the forward rotation table it must stay in
+        // sync with: for every rotation, the (westFacing,southFacing) pair it predicts must be
+        // exactly the leftBottom bucket key at which getRotatedPieces files a genuine ZERO-break
+        // candidate for that same rotation -- i.e. it must agree with the already-trusted table,
+        // not just be internally self-consistent.
+        BwPiece piece = new BwPiece(1, 10, 11, 12, 13); // Top,Right,Bottom,Left all distinct
+        List<BwUtil.RotatedCandidate> candidates = BwUtil.getRotatedPieces(piece, false);
+
+        for (int rotation = 0; rotation <= 3; rotation++) {
+            int west = BwUtil.westFacing(piece, rotation);
+            int south = BwUtil.southFacing(piece, rotation);
+            int leftBottom = BwUtil.calculateTwoSides(west, south);
+
+            int expectedRotation = rotation;
+            BwUtil.RotatedCandidate match = candidates.stream()
+                    .filter(c -> c.leftBottom() == leftBottom && c.rotatedPiece().rotations() == expectedRotation)
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("rotation " + expectedRotation
+                            + ": no candidate at leftBottom(" + west + "," + south + ")"));
+
+            assertEquals(0, match.rotatedPiece().breakCount(),
+                    "westFacing/southFacing must reproduce a genuine zero-break candidate for rotation " + expectedRotation);
+        }
+    }
+
+    @Test
     void testSortAndFreezeByScoreOrdersDescendingAndDropsScore() {
         // Both pieces share Left=2,Bottom=13 so their rotation-0 candidates collide at the same
         // table key (2,13), letting this test observe them ordered against each other directly.

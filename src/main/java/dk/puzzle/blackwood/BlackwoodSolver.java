@@ -79,6 +79,19 @@ public class BlackwoodSolver {
     static boolean NON_CENTER_HINTS_ENABLED =
             "true".equalsIgnoreCase(System.getenv("ETERNITY_NON_CENTER_HINTS"));
 
+    // 2026-09-11 prototype: colour-parity pruning (Anjou's "LEDGER pruning", see
+    // reference_e2_eternity2_dev notes -- validated there over 2,056 depths, 0 false prunes,
+    // 1.48x-45.3x node reduction). Every official colour appears an even number of times across
+    // the 256-piece set, so on any complete board every colour's break-touch count is forced
+    // even; if K colours currently sit at odd touch-parity, at least ceil(K/2) more breaks are
+    // unavoidable before completion, since one break can flip the parity of at most the two
+    // colours it touches. When that floor already exceeds the breaks still allowed for the rest
+    // of the attempt, the branch is provably dead -- see touchParity/toggleEdgeParity in
+    // solvePuzzle(). Defaults OFF, same convention as NON_CENTER_HINTS_ENABLED, pending an A/B
+    // comparison against the unpruned search.
+    static boolean PARITY_PRUNE_ENABLED =
+            "true".equalsIgnoreCase(System.getenv("ETERNITY_PARITY_PRUNE"));
+
     /**
      * The official Eternity II clue: piece number, board position (0-indexed), and required
      * rotation. Position and rotation were NOT taken from any public writeup -- they were
@@ -181,7 +194,7 @@ public class BlackwoodSolver {
     private final String piecesFilePath;
 
     private List<BwPiece> boardPieces;
-    private BwPiece[] pieceByNumber; // index = pieceNumber, length 257
+    BwPiece[] pieceByNumber; // index = pieceNumber, length 257 -- package-private, see toggleEdgeParity and its tests
     private PieceInventory inventory; // HoleSolver's own representation, built once alongside boardPieces
     // Concurrent: evaluateAndMaybeSave can be called from any of numWorkers worker threads at once.
     private final Set<String> savedCompletedBoards = ConcurrentHashMap.newKeySet();
@@ -217,6 +230,7 @@ public class BlackwoodSolver {
     int[] boardOrderCol;
     int[] breakArray;
     int[] heuristicArray;
+    int totalBreaksAllowed; // breakArray[255] -- the lifetime cap, for parity-prune's remaining-budget check
 
     // Verification instrumentation -- see plan's "solve_index==0 edge case" note.
     private final AtomicLong exhaustedAtSeedCount = new AtomicLong();
@@ -321,6 +335,7 @@ public class BlackwoodSolver {
         boardOrderCol = order.cols();
         breakArray = BwUtil.getBreakArray();
         heuristicArray = BwUtil.getHeuristicArray();
+        totalBreaksAllowed = breakArray[255];
 
         int firstBreakIndex = BwUtil.firstBreakIndex();
         masterPieceLookup = new BwRotatedPiece[256][][];
@@ -434,12 +449,56 @@ public class BlackwoodSolver {
         return solveIndex < 1;
     }
 
+    /**
+     * XOR-toggles {@code touchParity}'s bits for {@code piece} sitting at (row,col) against its
+     * west (col-1) and south (row-1) neighbours -- see PARITY_PRUNE_ENABLED's javadoc and
+     * BwUtilTest#testGetBoardOrderInvariantsHoldForEveryStep, which confirms both are always
+     * already placed by the time any other cell is filled. Self-inverse by construction (XOR):
+     * calling this again with the same piece/board state undoes it, so the same helper serves
+     * both placing a piece and clearing one, and (given `piece` is a parameter rather than read
+     * from {@code board[row*16+col]}) can also be called speculatively on a NOT-yet-committed
+     * candidate without mutating anything.
+     *
+     * <p>Deliberately does NOT check the grid boundary (row==0/15, col==0/15): unlike
+     * HoleSolver.breakTouchesByColour, which must handle an arbitrary/externally-sourced board,
+     * every candidate this solver ever places comes from a type-segregated table (corners /
+     * *Sides / middles*) that only ever offers a border-facing side of colour 0 -- confirmed
+     * both structurally (buildTable's fixed key-0 lookups for row 0 and col 0) and against real
+     * piece data (corner piece #1 is Top=1,Right=17,Bottom=0,Left=0; only a rotation with both
+     * its border sides outward ever matches the boundary lookups' fixed requirement of 0). A
+     * boundary edge therefore never breaks here, so it never needs a toggle.
+     */
+    static int toggleEdgeParity(int touchParity, BwRotatedPiece[] board, BwPiece[] pieceByNumber,
+                                 int row, int col, BwRotatedPiece piece) {
+        BwPiece base = pieceByNumber[piece.pieceNumber()];
+        if (col > 0) {
+            int expectedFromWest = board[row * 16 + col - 1].rightSide();
+            int actualWestFacing = BwUtil.westFacing(base, piece.rotations());
+            if (expectedFromWest != actualWestFacing) {
+                touchParity ^= (1 << expectedFromWest) ^ (1 << actualWestFacing);
+            }
+        }
+        if (row > 0) {
+            int expectedFromSouth = board[(row - 1) * 16 + col].topSide();
+            int actualSouthFacing = BwUtil.southFacing(base, piece.rotations());
+            if (expectedFromSouth != actualSouthFacing) {
+                touchParity ^= (1 << expectedFromSouth) ^ (1 << actualSouthFacing);
+            }
+        }
+        return touchParity;
+    }
+
     SolveResult solvePuzzle() {
         return solvePuzzle(DEFAULT_NODE_CAP);
     }
 
     /** Mirrors SolvePuzzle(). nodeCap is injectable for bounded tests; production uses DEFAULT_NODE_CAP. */
     SolveResult solvePuzzle(long nodeCap) {
+        return solvePuzzle(nodeCap, new Random().nextLong());
+    }
+
+    /** As {@link #solvePuzzle(long)}, but with an injectable seed -- for a paired/controlled comparison (e.g. pruned vs unpruned on the identical attempt) rather than two independently-random runs. */
+    SolveResult solvePuzzle(long nodeCap, long seed) {
         boolean[] pieceUsed = new boolean[257];
         int[] cumulativeHeuristicSideCount = new int[256];
         int[] pieceIndexToTryNext = new int[256];
@@ -447,7 +506,7 @@ public class BlackwoodSolver {
         BwRotatedPiece[] board = new BwRotatedPiece[256];
         Arrays.fill(board, BwRotatedPiece.EMPTY);
 
-        Random rand = new Random(); // fresh per attempt
+        Random rand = new Random(seed);
 
         BwRotatedPiece[][] bottomSides = BwUtil.sortAndFreezeBottomSides(bottomSidePiecesRotated, rand);
 
@@ -462,6 +521,10 @@ public class BlackwoodSolver {
         long nodeCount = 0;
         long lastImprovementNode = 0;
         long maxLateGap = 0;
+        // 23-bit mask, one bit per colour: bit c set means an odd number of currently-placed
+        // edges break on colour c. Only maintained when PARITY_PRUNE_ENABLED (see that field's
+        // javadoc and toggleEdgeParity) -- otherwise stays 0 and unused, at zero cost.
+        int touchParity = 0;
 
         while (true) {
             nodeCount++;
@@ -497,6 +560,9 @@ public class BlackwoodSolver {
             int col = boardOrderCol[solveIndex];
 
             if (board[row * 16 + col].pieceNumber() > 0) {
+                if (PARITY_PRUNE_ENABLED) {
+                    touchParity = toggleEdgeParity(touchParity, board, pieceByNumber, row, col, board[row * 16 + col]);
+                }
                 pieceUsed[board[row * 16 + col].pieceNumber()] = false;
                 board[row * 16 + col] = BwRotatedPiece.EMPTY;
             }
@@ -529,12 +595,175 @@ public class BlackwoodSolver {
                             }
                         }
 
+                        int candidateParity = touchParity;
+                        if (PARITY_PRUNE_ENABLED) {
+                            candidateParity = toggleEdgeParity(touchParity, board, pieceByNumber, row, col, candidates[i]);
+                            int breaksUsedAfter = cumulativeBreaks[solveIndex - 1] + candidates[i].breakCount();
+                            int oddColours = Integer.bitCount(candidateParity);
+                            int minMoreBreaksNeeded = (oddColours + 1) / 2;
+                            if (minMoreBreaksNeeded > totalBreaksAllowed - breaksUsedAfter) {
+                                continue; // no completion can respect the break budget from here -- try the next candidate
+                            }
+                        }
+
                         foundPiece = true;
                         BwRotatedPiece piece = candidates[i];
                         board[row * 16 + col] = piece;
                         pieceUsed[piece.pieceNumber()] = true;
                         cumulativeBreaks[solveIndex] = cumulativeBreaks[solveIndex - 1] + piece.breakCount();
                         cumulativeHeuristicSideCount[solveIndex] = cumulativeHeuristicSideCount[solveIndex - 1] + piece.heuristicSideCount();
+                        touchParity = candidateParity;
+                        pieceIndexToTryNext[solveIndex] = i + 1;
+                        solveIndex++;
+                        break;
+                    }
+                }
+            }
+
+            if (!foundPiece) {
+                pieceIndexToTryNext[solveIndex] = 0;
+                solveIndex--;
+            }
+        }
+    }
+
+    /**
+     * As {@link #solvePuzzle(long, long)}, but resumes from a caller-supplied partial board
+     * instead of a fresh random corner seed, and never backtracks below {@code startIndex} --
+     * once it would, this subtree is exhausted and the attempt returns. For a controlled,
+     * same-decision-point comparison of how many additional nodes it takes to resolve the SAME
+     * subtree under different search configuration (e.g. PARITY_PRUNE_ENABLED), instead of two
+     * independently-random full attempts that only happen to share a starting seed.
+     *
+     * <p>cumulativeBreaks/cumulativeHeuristicSideCount below startIndex are recomputed by
+     * summing each already-placed piece's own breakCount()/heuristicSideCount() in fill order,
+     * rather than requiring the caller to reconstruct and pass that bookkeeping separately --
+     * both are properties of the piece itself, not of how it was reached.
+     *
+     * <p>Deliberate near-duplicate of solvePuzzle(long,long)'s loop body rather than a shared
+     * extraction: this exists purely to support a benchmark/test comparison, and keeping it
+     * fully separate means it can never change solvePuzzle's own (already-verified) behaviour.
+     *
+     * <p>startIndex must be 1-255 (same implicit range solvePuzzle's own solveIndex relies on
+     * for boardOrderRow/Col indexing) -- not defended here since this is test/benchmark-only.
+     */
+    SolveResult solvePuzzleFrom(long nodeCap, long seed, BwRotatedPiece[] initialBoard, int startIndex) {
+        boolean[] pieceUsed = new boolean[257];
+        int[] cumulativeHeuristicSideCount = new int[256];
+        int[] pieceIndexToTryNext = new int[256];
+        int[] cumulativeBreaks = new int[256];
+        BwRotatedPiece[] board = new BwRotatedPiece[256];
+        Arrays.fill(board, BwRotatedPiece.EMPTY);
+
+        int touchParity = 0;
+        int cumBreaks = 0, cumHeuristic = 0;
+        for (int step = 0; step < startIndex; step++) {
+            int row = boardOrderRow[step];
+            int col = boardOrderCol[step];
+            BwRotatedPiece piece = initialBoard[row * 16 + col];
+            board[row * 16 + col] = piece;
+            pieceUsed[piece.pieceNumber()] = true;
+            cumBreaks += piece.breakCount();
+            cumHeuristic += piece.heuristicSideCount();
+            cumulativeBreaks[step] = cumBreaks;
+            cumulativeHeuristicSideCount[step] = cumHeuristic;
+            if (PARITY_PRUNE_ENABLED) {
+                touchParity = toggleEdgeParity(touchParity, board, pieceByNumber, row, col, piece);
+            }
+        }
+
+        Random rand = new Random(seed);
+        BwRotatedPiece[][] bottomSides = BwUtil.sortAndFreezeBottomSides(bottomSidePiecesRotated, rand);
+
+        int solveIndex = startIndex;
+        int maxSolveIndex = solveIndex;
+        long nodeCount = 0;
+        long lastImprovementNode = 0;
+        long maxLateGap = 0;
+
+        while (true) {
+            nodeCount++;
+
+            if (solveIndex > maxSolveIndex) {
+                if (solveIndex >= LATE_DEPTH) {
+                    long gap = nodeCount - lastImprovementNode;
+                    if (gap > maxLateGap) maxLateGap = gap;
+                }
+                maxSolveIndex = solveIndex;
+                lastImprovementNode = nodeCount;
+                if (maxSolveIndex >= saveThreshold) {
+                    evaluateAndMaybeSave(board, maxSolveIndex);
+                    if (maxSolveIndex >= 256) {
+                        return new SolveResult(maxSolveIndex, board, nodeCount, true, lastImprovementNode, maxLateGap);
+                    }
+                }
+            }
+
+            if (nodeCount > nodeCap) {
+                return new SolveResult(maxSolveIndex, board, nodeCount, false, lastImprovementNode, maxLateGap);
+            }
+
+            if (solveIndex < startIndex) {
+                return new SolveResult(maxSolveIndex, board, nodeCount, false, lastImprovementNode, maxLateGap);
+            }
+
+            int row = boardOrderRow[solveIndex];
+            int col = boardOrderCol[solveIndex];
+
+            if (board[row * 16 + col].pieceNumber() > 0) {
+                if (PARITY_PRUNE_ENABLED) {
+                    touchParity = toggleEdgeParity(touchParity, board, pieceByNumber, row, col, board[row * 16 + col]);
+                }
+                pieceUsed[board[row * 16 + col].pieceNumber()] = false;
+                board[row * 16 + col] = BwRotatedPiece.EMPTY;
+            }
+
+            BwRotatedPiece[] candidates;
+            if (row == 0) {
+                candidates = (col < 15)
+                        ? bottomSides[board[row * 16 + (col - 1)].rightSide() * 23]
+                        : corners[board[row * 16 + (col - 1)].rightSide() * 23];
+            } else {
+                int leftSide = (col == 0) ? 0 : board[row * 16 + (col - 1)].rightSide();
+                candidates = masterPieceLookup[row * 16 + col][leftSide * 23 + board[(row - 1) * 16 + col].topSide()];
+            }
+
+            boolean foundPiece = false;
+            if (candidates != null) {
+                int breaksThisTurn = breakArray[solveIndex] - cumulativeBreaks[solveIndex - 1];
+                int tryIndex = pieceIndexToTryNext[solveIndex];
+
+                for (int i = tryIndex; i < candidates.length; i++) {
+                    if (candidates[i].breakCount() > breaksThisTurn) {
+                        break;
+                    }
+
+                    if (!pieceUsed[candidates[i].pieceNumber()]) {
+                        if (solveIndex <= BwUtil.MAX_HEURISTIC_INDEX) {
+                            if ((cumulativeHeuristicSideCount[solveIndex - 1] + candidates[i].heuristicSideCount())
+                                    < heuristicArray[solveIndex]) {
+                                break;
+                            }
+                        }
+
+                        int candidateParity = touchParity;
+                        if (PARITY_PRUNE_ENABLED) {
+                            candidateParity = toggleEdgeParity(touchParity, board, pieceByNumber, row, col, candidates[i]);
+                            int breaksUsedAfter = cumulativeBreaks[solveIndex - 1] + candidates[i].breakCount();
+                            int oddColours = Integer.bitCount(candidateParity);
+                            int minMoreBreaksNeeded = (oddColours + 1) / 2;
+                            if (minMoreBreaksNeeded > totalBreaksAllowed - breaksUsedAfter) {
+                                continue;
+                            }
+                        }
+
+                        foundPiece = true;
+                        BwRotatedPiece piece = candidates[i];
+                        board[row * 16 + col] = piece;
+                        pieceUsed[piece.pieceNumber()] = true;
+                        cumulativeBreaks[solveIndex] = cumulativeBreaks[solveIndex - 1] + piece.breakCount();
+                        cumulativeHeuristicSideCount[solveIndex] = cumulativeHeuristicSideCount[solveIndex - 1] + piece.heuristicSideCount();
+                        touchParity = candidateParity;
                         pieceIndexToTryNext[solveIndex] = i + 1;
                         solveIndex++;
                         break;

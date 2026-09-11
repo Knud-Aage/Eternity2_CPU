@@ -125,6 +125,35 @@ public final class BwUtil {
         return side1 * 23 + side2;
     }
 
+    /**
+     * The two "required" colours (west-facing, south-facing -- see getRotatedPieces's rotation
+     * table below) of {@code piece} at {@code rotation}, recovered on demand rather than stored:
+     * BwRotatedPiece deliberately keeps only the emitted (top/right) sides once a candidate table
+     * is frozen. Needed by anything that must know WHICH colour a placed piece shows on a side
+     * BwRotatedPiece doesn't carry -- e.g. BlackwoodSolver's parity-pruning bookkeeping, which
+     * needs the actual colour on both sides of a break, not just that one occurred.
+     */
+    public static int westFacing(BwPiece piece, int rotation) {
+        return switch (rotation) {
+            case 0 -> piece.leftSide();
+            case 1 -> piece.bottomSide();
+            case 2 -> piece.rightSide();
+            case 3 -> piece.topSide();
+            default -> throw new IllegalArgumentException("rotation must be 0-3, got " + rotation);
+        };
+    }
+
+    /** @see #westFacing */
+    public static int southFacing(BwPiece piece, int rotation) {
+        return switch (rotation) {
+            case 0 -> piece.bottomSide();
+            case 1 -> piece.rightSide();
+            case 2 -> piece.topSide();
+            case 3 -> piece.leftSide();
+            default -> throw new IllegalArgumentException("rotation must be 0-3, got " + rotation);
+        };
+    }
+
     /** Transient table-construction record. Mirrors RotatedPieceWithLeftBottom; Score dropped once tables freeze. */
     public record RotatedCandidate(int leftBottom, int score, BwRotatedPiece rotatedPiece) {
     }
