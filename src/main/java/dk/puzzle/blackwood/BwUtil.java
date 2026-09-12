@@ -13,7 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.function.ToIntFunction;
+import java.util.function.ToIntBiFunction;
 
 /**
  * Static helpers mirroring Blackwood's {@code Util.cs} — table construction,
@@ -89,6 +89,26 @@ public final class BwUtil {
     // unrelated cells break-tolerant too. This array feeds ONLY getBreakArray()'s cumulative
     // budget, never firstBreakIndex().
     public static final int[] HINT_BREAK_INDEXES = {34, 45, 188, 247};
+
+    // 2026-09-12 experiment: allow a single cell to take TWO simultaneous breaks (both west and
+    // south mismatched at once), not just one -- currently addCandidateIfValid hard-caps breakCount
+    // at 1 even with allowBreaks=true. Motivated by Anjou's REPLAY finding that breaking past a
+    // search plateau specifically required a double break at one cell, not two single breaks at
+    // different cells (which the existing per-step schedule already permits just fine). Gated
+    // behind this flag (default off, same convention as every other opt-in switch here) since it
+    // needs a step where breaksThisTurn can actually reach 2 -- see DOUBLE_BREAK_STEP below --
+    // otherwise a breakCount=2 candidate would exist in the tables but never pass the existing
+    // `candidates[i].breakCount() > breaksThisTurn` gate in BlackwoodSolver's search loop.
+    static boolean DOUBLE_BREAK_ENABLED =
+            "true".equalsIgnoreCase(System.getenv("ETERNITY_DOUBLE_BREAK"));
+
+    // Which step gets to spend 2 breaks at once instead of 1, when DOUBLE_BREAK_ENABLED. Reuses
+    // BREAK_INDEXES_ALLOWED's own last (hardest/latest) unlock point rather than adding a new one,
+    // so this experiment changes exactly one thing: at this one step, a double-break candidate
+    // becomes reachable, instead of introducing an additional unlock the un-doubled schedule never
+    // had. No particular evidence pins the plateau Anjou saw to this exact step -- it's the most
+    // defensible single choice available (latest = hardest), not a confirmed target.
+    static final int DOUBLE_BREAK_STEP = 239;
 
     /**
      * Maps Blackwood's raw colour IDs (index) to this project's TheSil colour numbering (value) --
@@ -231,7 +251,8 @@ public final class BwUtil {
                 sideBreaks++;
             }
         }
-        if ((breakCount == 0 || (breakCount == 1 && allowBreaks)) && sideBreaks == 0) {
+        int maxBreakCount = allowBreaks ? (DOUBLE_BREAK_ENABLED ? 2 : 1) : 0;
+        if (breakCount <= maxBreakCount && sideBreaks == 0) {
             out.add(new RotatedCandidate(leftBottom, score - 100000 * breakCount,
                     new BwRotatedPiece(piece.pieceNumber(), rotation, emittedTop, emittedRight, breakCount, heuristicSideCount)));
         }
@@ -247,22 +268,36 @@ public final class BwUtil {
 
     /** The 9 batch-level tables: descending by (Score + rand.nextInt(99)), jitter computed once per entry. */
     public static BwRotatedPiece[][] sortAndFreezeByScore(Map<Integer, List<RotatedCandidate>> grouped, Random rand) {
-        return sortAndFreeze(grouped, c -> c.score() + rand.nextInt(99));
+        return sortAndFreeze(grouped, rand, (c, r) -> c.score() + r.nextInt(99));
     }
 
     /** bottom_sides only, rebuilt fresh every solvePuzzle() call with a DIFFERENT formula. */
     public static BwRotatedPiece[][] sortAndFreezeBottomSides(Map<Integer, List<RotatedCandidate>> grouped, Random rand) {
-        return sortAndFreeze(grouped, c -> (c.rotatedPiece().heuristicSideCount() > 0 ? 100 : 0) + rand.nextInt(99));
+        return sortAndFreeze(grouped, rand, (c, r) -> (c.rotatedPiece().heuristicSideCount() > 0 ? 100 : 0) + r.nextInt(99));
     }
 
-    private static BwRotatedPiece[][] sortAndFreeze(Map<Integer, List<RotatedCandidate>> grouped, ToIntFunction<RotatedCandidate> keyFn) {
+    /**
+     * 2026-09-12: each BUCKET (one leftBottom key) gets its own independently-seeded Random -- one
+     * nextLong() draw from seedSource regardless of bucket size -- instead of every bucket in this
+     * table sharing one sequential stream. Without this, a flag that changes ONE bucket's candidate
+     * count (e.g. DOUBLE_BREAK_ENABLED adding breakCount==2 entries wherever a piece/rotation
+     * happens to produce a genuine 2-mismatch) shifted how many rand draws that bucket consumed,
+     * desyncing the tie-break jitter of every OTHER bucket processed afterward in the same table --
+     * cells with nothing to do with the flag. This is the bucket-level counterpart to
+     * BlackwoodSolver's per-TABLE freshTableRandom fix; measured directly that fixing only the
+     * table-level coupling was insufficient: a 100-trial A/B still showed double-break's outlier
+     * rate (11%) well above single-break's (3%) even after that first fix.
+     */
+    private static BwRotatedPiece[][] sortAndFreeze(Map<Integer, List<RotatedCandidate>> grouped, Random seedSource,
+            ToIntBiFunction<RotatedCandidate, Random> keyFn) {
         BwRotatedPiece[][] result = new BwRotatedPiece[529][];
         for (Map.Entry<Integer, List<RotatedCandidate>> e : grouped.entrySet()) {
             record Keyed(int key, RotatedCandidate candidate) {
             }
+            Random bucketRand = new Random(seedSource.nextLong());
             List<Keyed> keyed = new ArrayList<>(e.getValue().size());
             for (RotatedCandidate c : e.getValue()) {
-                keyed.add(new Keyed(keyFn.applyAsInt(c), c)); // key computed ONCE, not resampled during sort
+                keyed.add(new Keyed(keyFn.applyAsInt(c, bucketRand), c)); // key computed ONCE, not resampled during sort
             }
             keyed.sort((a, b) -> Integer.compare(b.key(), a.key())); // descending, stable (matches LINQ OrderByDescending)
             BwRotatedPiece[] arr = new BwRotatedPiece[keyed.size()];
@@ -282,21 +317,27 @@ public final class BwUtil {
         return min; // 201
     }
 
-    /** Cumulative count of unlocked break-budget steps at or before each index. Mirrors Util.Get_Break_Array(). */
+    /**
+     * Cumulative count of unlocked break-budget steps at or before each index. Mirrors
+     * Util.Get_Break_Array(). When DOUBLE_BREAK_ENABLED, DOUBLE_BREAK_STEP unlocks 2 at once
+     * instead of 1 -- the one place in the schedule where breaksThisTurn can reach 2, letting a
+     * double-break candidate (see addCandidateIfValid) actually pass the search's break-budget
+     * gate there instead of just existing unused in the tables.
+     */
     public static int[] getBreakArray() {
         int[] arr = new int[256];
         int cumulative = 0;
         for (int i = 0; i < 256; i++) {
-            boolean unlockedHere = false;
+            int unlockedHere = 0;
             for (int allowed : BREAK_INDEXES_ALLOWED) {
-                if (allowed == i) { unlockedHere = true; break; }
+                if (allowed == i) { unlockedHere = (DOUBLE_BREAK_ENABLED && i == DOUBLE_BREAK_STEP) ? 2 : 1; break; }
             }
-            if (!unlockedHere) {
+            if (unlockedHere == 0) {
                 for (int allowed : HINT_BREAK_INDEXES) {
-                    if (allowed == i) { unlockedHere = true; break; }
+                    if (allowed == i) { unlockedHere = 1; break; }
                 }
             }
-            if (unlockedHere) cumulative++;
+            cumulative += unlockedHere;
             arr[i] = cumulative;
         }
         return arr;

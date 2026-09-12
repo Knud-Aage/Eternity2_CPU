@@ -290,9 +290,19 @@ public class BlackwoodSolver {
                 boardPieces.stream().filter(p -> p.pieceNumber() == num).findFirst()
                         .orElseThrow(() -> new IllegalStateException("Hint piece " + num + " not found in piece set"));
 
-        Random rand = new Random(); // one instance reused across this whole prepare() call, matches C#'s lifetime
+        // 2026-09-12: mints an INDEPENDENT Random per table below (see freshTableRandom) instead
+        // of every table drawing from one shared sequential stream. Measured cause of the
+        // double-break A/B's ~15% severe-outlier tail: DOUBLE_BREAK_ENABLED widens topSides /
+        // rightSidesWithBreaks / middlesWithBreak (more candidates pass addCandidateIfValid), which
+        // shifts how many rand draws THOSE tables consume -- and with one shared stream, that
+        // desynced the tie-break jitter of every table built afterward too, including
+        // middlesNoBreak (content unaffected by the flag, but fed by the same rand). Confirmed
+        // empirically: which seeds struggled changed completely between two otherwise-identical
+        // prepare() calls. Still a fresh, unseeded realization every prepare() call overall,
+        // matching C#'s lifetime -- only the cross-table coupling is removed.
+        Random rand = new Random();
 
-        corners = buildTable(cornerPieces, false, null, rand);
+        corners = buildTable(cornerPieces, false, null, freshTableRandom(rand));
 
         List<BwUtil.RotatedCandidate> sidesNoBreak = new ArrayList<>();
         for (BwPiece p : sidePieces) {
@@ -304,16 +314,16 @@ public class BlackwoodSolver {
         }
 
         bottomSidePiecesRotated = BwUtil.groupByLeftBottom(filterRotation(sidesNoBreak, 0)); // raw, unsorted
-        leftSides = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesNoBreak, 1)), rand);
-        rightSidesWithoutBreaks = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesNoBreak, 3)), rand);
-        topSides = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesWithBreak, 2)), rand);
-        rightSidesWithBreaks = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesWithBreak, 3)), rand);
+        leftSides = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesNoBreak, 1)), freshTableRandom(rand));
+        rightSidesWithoutBreaks = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesNoBreak, 3)), freshTableRandom(rand));
+        topSides = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesWithBreak, 2)), freshTableRandom(rand));
+        rightSidesWithBreaks = BwUtil.sortAndFreezeByScore(BwUtil.groupByLeftBottom(filterRotation(sidesWithBreak, 3)), freshTableRandom(rand));
 
-        middlesWithBreak = buildTable(middlePieces, true, null, rand);
-        middlesNoBreak = buildTable(middlePieces, false, null, rand);
-        southStart = buildTable(middlePieces, false, rp -> rp.topSide() == 6, rand);
-        westStart = buildTable(middlePieces, false, rp -> rp.rightSide() == 11, rand);
-        start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == 2, rand);
+        middlesWithBreak = buildTable(middlePieces, true, null, freshTableRandom(rand));
+        middlesNoBreak = buildTable(middlePieces, false, null, freshTableRandom(rand));
+        southStart = buildTable(middlePieces, false, rp -> rp.topSide() == 6, freshTableRandom(rand));
+        westStart = buildTable(middlePieces, false, rp -> rp.rightSide() == 11, freshTableRandom(rand));
+        start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == 2, freshTableRandom(rand));
         // All four non-center hints get allowBreaks=true (see BwUtil.HINT_BREAK_INDEXES) -- 208
         // and 255 first (2026-09-02), 181 and 249 added 2026-09-04 after 181 turned out to be the
         // ACTUAL fill-step-34 hint (208 is really at step 188, 255 at 247 -- see BwUtil's
@@ -321,10 +331,10 @@ public class BlackwoodSolver {
         // better explanation for the population bottlenecking at 34 than anything about 208. Only
         // start (139, the mandatory center) stays a hard pin -- it predates the whole hint feature
         // and has never shown this problem.
-        hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == 2, rand);
-        hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == 2, rand);
-        hint181 = buildTable(List.of(hintPiece.apply(181)), true, rp -> rp.rotations() == 2, rand);
-        hint249 = buildTable(List.of(hintPiece.apply(249)), true, rp -> rp.rotations() == 3, rand);
+        hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == 2, freshTableRandom(rand));
+        hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == 2, freshTableRandom(rand));
+        hint181 = buildTable(List.of(hintPiece.apply(181)), true, rp -> rp.rotations() == 2, freshTableRandom(rand));
+        hint249 = buildTable(List.of(hintPiece.apply(249)), true, rp -> rp.rotations() == 3, freshTableRandom(rand));
 
         if (corners[0] == null || corners[0].length == 0) {
             throw new IllegalStateException("corners[0] is empty -- no corner piece qualifies for LeftBottom=0; step-0 seeding would fail.");
@@ -369,6 +379,16 @@ public class BlackwoodSolver {
             }
         }
         applyNegativeFacts();
+    }
+
+    /**
+     * Mints an independently-seeded Random for one table's own tie-break jitter, drawing exactly
+     * one long from the shared per-batch seed source regardless of how many candidates that table
+     * ends up with -- see prepare()'s own comment on why this matters (decouples one table's
+     * candidate COUNT, e.g. under DOUBLE_BREAK_ENABLED, from every OTHER table's tie-break order).
+     */
+    private static Random freshTableRandom(Random seedSource) {
+        return new Random(seedSource.nextLong());
     }
 
     /**
@@ -580,10 +600,22 @@ public class BlackwoodSolver {
             boolean foundPiece = false;
             if (candidates != null) {
                 int breaksThisTurn = breakArray[solveIndex] - cumulativeBreaks[solveIndex - 1];
+                // 2026-09-12: a candidate needing 2 simultaneous breaks is only ever meant to be
+                // reachable at BwUtil.DOUBLE_BREAK_STEP itself (see its javadoc) -- but
+                // breaksThisTurn is a cumulative ceiling-minus-spent value that can naturally
+                // exceed 1 at OTHER steps too, wherever the search has been frugal earlier.
+                // Measured directly: without this check, a breakCount==2 candidate got accepted at
+                // dozens of unrelated steps (216, 217, 221, ...), hundreds of thousands of times in
+                // one attempt -- not the single scoped step the feature's own comment claims. Capping
+                // at 1 everywhere else keeps the experiment to the one cell it's meant to change; a
+                // no-op when DOUBLE_BREAK_ENABLED is off, since no table ever contains breakCount==2
+                // entries in that case (see BwUtil.addCandidateIfValid).
+                int effectiveBreakCap = (BwUtil.DOUBLE_BREAK_ENABLED && solveIndex == BwUtil.DOUBLE_BREAK_STEP)
+                        ? breaksThisTurn : Math.min(breaksThisTurn, 1);
                 int tryIndex = pieceIndexToTryNext[solveIndex];
 
                 for (int i = tryIndex; i < candidates.length; i++) {
-                    if (candidates[i].breakCount() > breaksThisTurn) {
+                    if (candidates[i].breakCount() > effectiveBreakCap) {
                         break;
                     }
 
@@ -731,10 +763,22 @@ public class BlackwoodSolver {
             boolean foundPiece = false;
             if (candidates != null) {
                 int breaksThisTurn = breakArray[solveIndex] - cumulativeBreaks[solveIndex - 1];
+                // 2026-09-12: a candidate needing 2 simultaneous breaks is only ever meant to be
+                // reachable at BwUtil.DOUBLE_BREAK_STEP itself (see its javadoc) -- but
+                // breaksThisTurn is a cumulative ceiling-minus-spent value that can naturally
+                // exceed 1 at OTHER steps too, wherever the search has been frugal earlier.
+                // Measured directly: without this check, a breakCount==2 candidate got accepted at
+                // dozens of unrelated steps (216, 217, 221, ...), hundreds of thousands of times in
+                // one attempt -- not the single scoped step the feature's own comment claims. Capping
+                // at 1 everywhere else keeps the experiment to the one cell it's meant to change; a
+                // no-op when DOUBLE_BREAK_ENABLED is off, since no table ever contains breakCount==2
+                // entries in that case (see BwUtil.addCandidateIfValid).
+                int effectiveBreakCap = (BwUtil.DOUBLE_BREAK_ENABLED && solveIndex == BwUtil.DOUBLE_BREAK_STEP)
+                        ? breaksThisTurn : Math.min(breaksThisTurn, 1);
                 int tryIndex = pieceIndexToTryNext[solveIndex];
 
                 for (int i = tryIndex; i < candidates.length; i++) {
-                    if (candidates[i].breakCount() > breaksThisTurn) {
+                    if (candidates[i].breakCount() > effectiveBreakCap) {
                         break;
                     }
 

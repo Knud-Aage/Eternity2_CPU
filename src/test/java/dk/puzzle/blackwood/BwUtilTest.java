@@ -113,6 +113,75 @@ class BwUtilTest {
     }
 
     @Test
+    void testDoubleBreakDisabledByDefaultNeverProducesBreakCountTwo() {
+        // Colours deliberately avoid SIDE_EDGES so a genuine double mismatch (both west and south)
+        // is otherwise eligible -- this isolates whether DOUBLE_BREAK_ENABLED itself gates it.
+        BwPiece piece = new BwPiece(1001, 2, 3, 4, 6);
+        assertFalse(BwUtil.DOUBLE_BREAK_ENABLED, "sanity: must be off by default for this test to mean anything");
+
+        List<BwUtil.RotatedCandidate> withBreaks = BwUtil.getRotatedPieces(piece, true);
+        assertTrue(withBreaks.stream().noneMatch(c -> c.rotatedPiece().breakCount() == 2),
+                "breakCount=2 must never appear while DOUBLE_BREAK_ENABLED is off");
+    }
+
+    @Test
+    void testDoubleBreakEnabledProducesBreakCountTwoOnlyWithAllowBreaks() {
+        BwPiece piece = new BwPiece(1002, 2, 3, 4, 6); // no SIDE_EDGES colours, isolates break-count behaviour
+        BwUtil.DOUBLE_BREAK_ENABLED = true;
+        try {
+            List<BwUtil.RotatedCandidate> withBreaks = BwUtil.getRotatedPieces(piece, true);
+            assertTrue(withBreaks.stream().anyMatch(c -> c.rotatedPiece().breakCount() == 2),
+                    "breakCount=2 must be reachable once DOUBLE_BREAK_ENABLED is on and allowBreaks=true");
+
+            List<BwUtil.RotatedCandidate> noBreaks = BwUtil.getRotatedPieces(piece, false);
+            assertTrue(noBreaks.stream().allMatch(c -> c.rotatedPiece().breakCount() == 0),
+                    "DOUBLE_BREAK_ENABLED must not bypass allowBreaks=false");
+        } finally {
+            BwUtil.DOUBLE_BREAK_ENABLED = false; // restore -- static flag, must not leak into other tests
+        }
+    }
+
+    @Test
+    void testDoubleBreakStillDisqualifiesSideEdgeMismatch() {
+        // Piece with a SIDE_EDGES colour (1) on TopSide. At rotation 3, westFacing=TopSide=1 and
+        // southFacing=LeftSide=4 (see getRotatedPieces's own rotation comment). Bucket (left=0,
+        // bottom=0) mismatches BOTH sides -- without the sideBreaks veto this would be exactly the
+        // breakCount=2 case DOUBLE_BREAK_ENABLED is meant to newly allow, but the west mismatch is
+        // on a SIDE_EDGES colour, so it must still be excluded regardless.
+        BwPiece piece = new BwPiece(1003, 1, 2, 3, 4); // Top=1 is a SIDE_EDGES colour
+        int vetoedKey = BwUtil.calculateTwoSides(0, 0); // left=0 (!=1), bottom=0 (!=4): both sides mismatch
+        BwUtil.DOUBLE_BREAK_ENABLED = true;
+        try {
+            List<BwUtil.RotatedCandidate> withBreaks = BwUtil.getRotatedPieces(piece, true);
+            assertTrue(withBreaks.stream().noneMatch(c -> c.leftBottom() == vetoedKey && c.rotatedPiece().rotations() == 3),
+                    "a SIDE_EDGES-coloured mismatch must be excluded even when double breaks are enabled");
+        } finally {
+            BwUtil.DOUBLE_BREAK_ENABLED = false;
+        }
+    }
+
+    @Test
+    void testGetBreakArrayDoubleBreakStepUnlocksTwoOnlyWhenEnabled() {
+        int[] normal = BwUtil.getBreakArray();
+        int before = normal[BwUtil.DOUBLE_BREAK_STEP - 1];
+        assertEquals(before + 1, normal[BwUtil.DOUBLE_BREAK_STEP], "default schedule unlocks exactly 1 at this step");
+
+        BwUtil.DOUBLE_BREAK_ENABLED = true;
+        try {
+            int[] doubled = BwUtil.getBreakArray();
+            assertEquals(before + 2, doubled[BwUtil.DOUBLE_BREAK_STEP], "DOUBLE_BREAK_ENABLED must unlock 2 at DOUBLE_BREAK_STEP");
+            // Every OTHER unlock step is unaffected -- this changes exactly one step, not the whole schedule.
+            for (int i = 0; i < 256; i++) {
+                if (i == BwUtil.DOUBLE_BREAK_STEP) continue;
+                assertEquals(normal[i] + (i > BwUtil.DOUBLE_BREAK_STEP ? 1 : 0), doubled[i],
+                        "step " + i + " should only shift by the one extra double-break slot, if at or past it");
+            }
+        } finally {
+            BwUtil.DOUBLE_BREAK_ENABLED = false;
+        }
+    }
+
+    @Test
     void testWestFacingAndSouthFacingMatchGetRotatedPiecesForEveryRotation() {
         // Cross-checks the reverse lookup against the forward rotation table it must stay in
         // sync with: for every rotation, the (westFacing,southFacing) pair it predicts must be
