@@ -88,6 +88,10 @@ public final class BwUtil {
     // Folding these in would have dropped that cutoff from 201 to 34, silently making ~150+
     // unrelated cells break-tolerant too. This array feeds ONLY getBreakArray()'s cumulative
     // budget, never firstBreakIndex().
+    //
+    // Only granted when the hints are enabled (see getBreakArray). With hints off there is no hint
+    // cell to spend them on, so they would just pre-fund 4 extra breaks for ordinary cells: a
+    // ceiling of 14 instead of 10, which measured about +4 conflicts at every depth.
     public static final int[] HINT_BREAK_INDEXES = {34, 45, 188, 247};
 
     // 2026-09-12 experiment: allow a single cell to take TWO simultaneous breaks (both west and
@@ -293,9 +297,10 @@ public final class BwUtil {
      * Util.Get_Break_Array(). When DOUBLE_BREAK_ENABLED, DOUBLE_BREAK_STEP unlocks 2 at once
      * instead of 1 -- the one place in the schedule where breaksThisTurn can reach 2, letting a
      * double-break candidate (see addCandidateIfValid) actually pass the search's break-budget
-     * gate there instead of just existing unused in the tables.
+     * gate there instead of just existing unused in the tables. The four HINT_BREAK_INDEXES
+     * grants are added only when {@code nonCenterHintsEnabled}.
      */
-    public static int[] getBreakArray() {
+    public static int[] getBreakArray(boolean nonCenterHintsEnabled) {
         int[] arr = new int[256];
         int cumulative = 0;
         for (int i = 0; i < 256; i++) {
@@ -303,7 +308,7 @@ public final class BwUtil {
             for (int allowed : BREAK_INDEXES_ALLOWED) {
                 if (allowed == i) { unlockedHere = (DOUBLE_BREAK_ENABLED && i == DOUBLE_BREAK_STEP) ? 2 : 1; break; }
             }
-            if (unlockedHere == 0) {
+            if (unlockedHere == 0 && nonCenterHintsEnabled) {
                 for (int allowed : HINT_BREAK_INDEXES) {
                     if (allowed == i) { unlockedHere = 1; break; }
                 }
