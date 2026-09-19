@@ -6,6 +6,7 @@ import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
+import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.gson.GsonFactory;
@@ -39,6 +40,21 @@ public class GoogleDriveConfig {
     private static final List<String> SCOPES = Collections.singletonList(DriveScopes.DRIVE_FILE);
     private static final Logger logger = LogManager.getLogger(GoogleDriveConfig.class);
 
+    /**
+     * Connect and read timeout for every Drive call. The client library's 20 s default is short
+     * enough that a single slow Drive response ("Read timed out") once ended a whole run's uploads.
+     */
+    private static final int HTTP_TIMEOUT_MILLIS = 60_000;
+
+    /**
+     * {@code /credentials.json} is not on the classpath -- the one Drive problem that no retry can
+     * fix, and so the only one {@link DriveUploader} treats as "switch uploads off".
+     */
+    public static final class MissingCredentialsException extends FileNotFoundException {
+        public MissingCredentialsException(String message) {
+            super(message);
+        }
+    }
 
     /**
      * Initializes and returns an authorized Google Drive service instance.
@@ -61,7 +77,7 @@ public class GoogleDriveConfig {
 
         InputStream in = GoogleDriveConfig.class.getResourceAsStream("/credentials.json");
         if (in == null) {
-            throw new FileNotFoundException(">>> [ERROR] Couldn't find /credentials.json. Does it lay in src/main/resources?");
+            throw new MissingCredentialsException(">>> [ERROR] Couldn't find /credentials.json. Does it lay in src/main/resources?");
         }
 
         GoogleClientSecrets clientSecrets = GoogleClientSecrets.load(JSON_FACTORY, new InputStreamReader(in));
@@ -75,7 +91,13 @@ public class GoogleDriveConfig {
         LocalServerReceiver receiver = new LocalServerReceiver.Builder().setPort(8888).build();
         Credential credential = new AuthorizationCodeInstalledApp(flow, receiver).authorize("user");
 
-        return new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY, credential)
+        HttpRequestInitializer withTimeouts = request -> {
+            credential.initialize(request);
+            request.setConnectTimeout(HTTP_TIMEOUT_MILLIS);
+            request.setReadTimeout(HTTP_TIMEOUT_MILLIS);
+        };
+
+        return new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY, withTimeouts)
                 .setApplicationName(APPLICATION_NAME)
                 .build();
     }
