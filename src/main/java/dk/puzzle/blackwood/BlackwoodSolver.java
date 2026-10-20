@@ -676,13 +676,13 @@ public class BlackwoodSolver {
     }
 
     // 2026-09-06: the permanently-save-worthy floor now depends on which regime is running -- see
-    // BlackwoodGpuRunner's alwaysSaveAtOrBelow() for the full rationale (12 for no-hints, 18 for
-    // the five-clue regime). A method, not a static final field: NON_CENTER_HINTS_ENABLED is
+    // BlackwoodGpuRunner's alwaysSaveAtOrBelow() for the full rationale (13 for no-hints since
+    // 2026-10-20, it was 12; 18 for the five-clue regime). A method, not a static final field: NON_CENTER_HINTS_ENABLED is
     // deliberately mutable (tests flip it after class-load), and it's declared AFTER this point in
     // the file, so a field initializer here would read its default (false) at class-init time
     // instead of the real value -- reading it inside a method sidesteps that entirely.
     private static int alwaysSaveAtOrBelow() {
-        return parseIntEnv("ETERNITY_SAVE_FLOOR", NON_CENTER_HINTS_ENABLED ? 18 : 12);
+        return parseIntEnv("ETERNITY_SAVE_FLOOR", NON_CENTER_HINTS_ENABLED ? 18 : 13);
     }
 
     private static long parseLongEnv(String name, long defaultValue) {
