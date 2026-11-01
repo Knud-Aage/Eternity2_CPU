@@ -68,8 +68,17 @@ unattended run can be checked remotely. It is entirely optional and deliberately
 3. **Gone:** delete the `dk.puzzle.io.drive` package, that call, and the three `com.google.*`
    dependencies in `pom.xml`.
 
-No credentials are committed. Without them the first upload fails, logs one warning, and disables
-itself for the rest of the run — so a fresh clone works out of the box with no Drive setup.
+No credentials are committed. Without `credentials.json` (in `src/main/resources`) or without a stored
+sign-in (`tokens/`), the first upload logs one warning and disables itself for the rest of the run — so a
+fresh clone works out of the box with no Drive setup. The solver never opens a browser itself: to turn
+Drive mirroring on, sign in once, by hand, from the repository root (on Windows use `;` as the separator):
+
+```bash
+java -cp "target/classes:$(cat cp.txt)" dk.puzzle.io.drive.GoogleDriveConfig
+```
+
+This opens Google's consent page (a local receiver on port 8888 catches the answer) and stores the token
+in `tokens/`. On a machine without a browser, sign in elsewhere and copy `tokens/` across.
 
 ## How it works
 

@@ -34,8 +34,10 @@ import java.util.concurrent.TimeUnit;
  * </ol>
  *
  * <p>Credentials are never committed: {@code GoogleDriveConfig} reads {@code /credentials.json}
- * from the classpath and writes OAuth tokens to {@code tokens/}, both of which this repository's
- * {@code .gitignore} excludes. With no credentials present, the first upload attempt is logged
+ * from the classpath and the OAuth token from {@code tokens/}, both of which this repository's
+ * {@code .gitignore} excludes. The token is written once, by hand, by {@code GoogleDriveConfig}'s {@code main}
+ * (a browser sign-in); the solver itself never opens a browser. With no credentials or no stored sign-in
+ * present, the first upload attempt is logged
  * once at WARN and uploads switch themselves off for the rest of the process -- so a fresh clone
  * runs correctly out of the box without any Drive setup at all.</p>
  *

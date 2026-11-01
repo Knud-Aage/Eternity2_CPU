@@ -17,8 +17,10 @@ import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.File;
 
 import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
 import org.apache.logging.log4j.LogManager;
@@ -37,6 +39,8 @@ public class GoogleDriveConfig {
     private static final JsonFactory JSON_FACTORY = GsonFactory.getDefaultInstance();
 
     private static final String TOKENS_DIRECTORY_PATH = "tokens";
+    /** The key the one stored sign-in lives under in {@code tokens/}. */
+    static final String USER_ID = "user";
     private static final List<String> SCOPES = Collections.singletonList(DriveScopes.DRIVE_FILE);
     private static final Logger logger = LogManager.getLogger(GoogleDriveConfig.class);
 
@@ -47,8 +51,9 @@ public class GoogleDriveConfig {
     private static final int HTTP_TIMEOUT_MILLIS = 60_000;
 
     /**
-     * {@code /credentials.json} is not on the classpath -- the one Drive problem that no retry can
-     * fix, and so the only one {@link DriveUploader} treats as "switch uploads off".
+     * Nothing to authorize with: either {@code /credentials.json} is not on the classpath, or nobody has signed in yet
+     * (no usable token in {@code tokens/}, see {@link #main}). The Drive problem that no retry can fix, and so the
+     * only one {@link DriveUploader} treats as "switch uploads off".
      */
     public static final class MissingCredentialsException extends FileNotFoundException {
         public MissingCredentialsException(String message) {
@@ -57,39 +62,40 @@ public class GoogleDriveConfig {
     }
 
     /**
-     * Initializes and returns an authorized Google Drive service instance.
+     * Returns an authorized Google Drive service built from the sign-in stored in {@code tokens/}.
      *
-     * <p>The method orchestrates the following initialization steps:
-     * <ol>
-     *     <li>Loads client secrets from {@code /credentials.json} located in the resources directory.</li>
-     *     <li>Sets up a {@link GoogleAuthorizationCodeFlow} with file-level access permissions.</li>
-     *     <li>Triggers a local server receiver on port 8888 for user authorization.</li>
-     *     <li>Persists or retrieves authorization tokens from the local {@code tokens} folder.</li>
-     * </ol></p>
+     * <p>Never opens a browser or a port: the solver runs unattended, and a sign-in prompt on the one upload thread
+     * would block every later upload for good. Without a usable stored sign-in this throws
+     * {@link MissingCredentialsException}, which switches uploads off for the run. The sign-in is done once, by hand,
+     * with {@link #main}.</p>
      *
      * @return An authorized {@link Drive} service instance ready for API operations.
-     * @throws FileNotFoundException If the {@code credentials.json} file is missing from the classpath.
-     * @throws Exception If an error occurs during the transport initialization or the OAuth2 authorization 
-     *                   sequence.
+     * @throws MissingCredentialsException If {@code /credentials.json} is not on the classpath, or no usable sign-in is
+     *                   stored in {@code tokens/}.
+     * @throws Exception If the transport cannot be initialized or the stored sign-in cannot be read.
      */
     public static Drive getDriveService() throws Exception {
-        final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
-
         InputStream in = GoogleDriveConfig.class.getResourceAsStream("/credentials.json");
         if (in == null) {
             throw new MissingCredentialsException(">>> [ERROR] Couldn't find /credentials.json. Does it lay in src/main/resources?");
         }
+        return getDriveService(in, new java.io.File(TOKENS_DIRECTORY_PATH));
+    }
 
-        GoogleClientSecrets clientSecrets = GoogleClientSecrets.load(JSON_FACTORY, new InputStreamReader(in));
+    /**
+     * As {@link #getDriveService()} with the client secrets and the token folder given, so that a test can use a temporary one.
+     * Reads and closes {@code clientSecretsJson}.
+     */
+    static Drive getDriveService(InputStream clientSecretsJson, java.io.File tokensDir) throws Exception {
+        final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
 
-        GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(
-                HTTP_TRANSPORT, JSON_FACTORY, clientSecrets, SCOPES)
-                .setDataStoreFactory(new FileDataStoreFactory(new java.io.File(TOKENS_DIRECTORY_PATH)))
-                .setAccessType("offline")
-                .build();
-
-        LocalServerReceiver receiver = new LocalServerReceiver.Builder().setPort(8888).build();
-        Credential credential = new AuthorizationCodeInstalledApp(flow, receiver).authorize("user");
+        GoogleAuthorizationCodeFlow flow = buildFlow(HTTP_TRANSPORT, clientSecretsJson, tokensDir);
+        Credential credential = flow.loadCredential(USER_ID);
+        if (!isUsable(credential)) {
+            throw new MissingCredentialsException("No Google sign-in is stored in " + tokensDir.getAbsolutePath()
+                    + ". Sign in once, by hand, from the repository root: java -cp \"target/classes:$(cat cp.txt)\" "
+                    + GoogleDriveConfig.class.getName() + " (see the README)");
+        }
 
         HttpRequestInitializer withTimeouts = request -> {
             credential.initialize(request);
@@ -100,6 +106,47 @@ public class GoogleDriveConfig {
         return new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY, withTimeouts)
                 .setApplicationName(APPLICATION_NAME)
                 .build();
+    }
+
+    /** The OAuth flow over the client secrets and the token folder. Reads and closes {@code clientSecretsJson}. */
+    static GoogleAuthorizationCodeFlow buildFlow(NetHttpTransport httpTransport, InputStream clientSecretsJson,
+                                                 java.io.File tokensDir) throws IOException {
+        GoogleClientSecrets clientSecrets;
+        try (InputStreamReader reader = new InputStreamReader(clientSecretsJson, StandardCharsets.UTF_8)) {
+            clientSecrets = GoogleClientSecrets.load(JSON_FACTORY, reader);
+        }
+        return new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, clientSecrets, SCOPES)
+                .setDataStoreFactory(new FileDataStoreFactory(tokensDir))
+                .setAccessType("offline")
+                .build();
+    }
+
+    /** The test the client library's own browser flow applies before it reuses a stored sign-in. */
+    static boolean isUsable(Credential credential) {
+        return credential != null
+                && (credential.getRefreshToken() != null
+                || credential.getExpiresInSeconds() == null
+                || credential.getExpiresInSeconds() > 60);
+    }
+
+    /**
+     * The one-time sign-in. Run it by hand, from the repository root and on a machine with a browser:
+     * {@code java -cp "target/classes:$(cat cp.txt)" dk.puzzle.io.drive.GoogleDriveConfig}
+     * Google's consent page opens (a local receiver on port 8888 catches the answer) and the token is stored in {@code tokens/},
+     * after which the solver uploads on its own. On a machine without a browser, sign in elsewhere and copy {@code tokens/} across.
+     * The solver itself never does this: unattended, it would wait for a browser that never comes.
+     */
+    public static void main(String[] args) throws Exception {
+        InputStream in = GoogleDriveConfig.class.getResourceAsStream("/credentials.json");
+        if (in == null) {
+            System.err.println("Couldn't find /credentials.json on the class path -- put it in src/main/resources and rebuild.");
+            System.exit(1);
+        }
+        java.io.File tokensDir = new java.io.File(TOKENS_DIRECTORY_PATH);
+        GoogleAuthorizationCodeFlow flow = buildFlow(GoogleNetHttpTransport.newTrustedTransport(), in, tokensDir);
+        LocalServerReceiver receiver = new LocalServerReceiver.Builder().setPort(8888).build();
+        new AuthorizationCodeInstalledApp(flow, receiver).authorize(USER_ID);
+        System.out.println("Signed in. The token is stored in " + tokensDir.getAbsolutePath() + "; the solver uploads to Drive from now on.");
     }
 
     /**
