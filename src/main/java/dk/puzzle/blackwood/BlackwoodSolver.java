@@ -621,20 +621,21 @@ public class BlackwoodSolver {
             }
 
             String completedLink = BucasExporter.exportBoard(completed);
-            if (!savedCompletedBoards.add(completedLink)) {
+            String timeId = LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss_SSS"));
+            String prefix = "Errors" + conflicts + "_Base" + maxSolveIndex + "_" + timeId;
+            boolean fresh = claimAndWrite(savedCompletedBoards, completedLink, () -> {
+                Files.createDirectories(outputDir);
+                HoleSolver.writePhysicalLayoutFile(outputDir.resolve(prefix + "_physical_layout.txt").toString(),
+                        inventory, result.finalBoard(), result.repairedBoard());
+                HoleSolver.writeRawBoardFile(outputDir.resolve(prefix + "_RawBoard.txt").toString(), inventory, completed);
+                // Third sibling, in Blackwood's own piece numbering -- what BwSeedLoader can actually
+                // read as a future seed, same rationale as the GPU runner's own baseboard file.
+                Files.writeString(outputDir.resolve(prefix + "_baseboard.txt"), boardString);
+            });
+            if (!fresh) {
                 logger.debug("Completed board at {} conflicts already saved, skipping duplicate", conflicts);
                 return;
             }
-
-            Files.createDirectories(outputDir);
-            String timeId = LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss_SSS"));
-            String prefix = "Errors" + conflicts + "_Base" + maxSolveIndex + "_" + timeId;
-            HoleSolver.writePhysicalLayoutFile(outputDir.resolve(prefix + "_physical_layout.txt").toString(),
-                    inventory, result.finalBoard(), result.repairedBoard());
-            HoleSolver.writeRawBoardFile(outputDir.resolve(prefix + "_RawBoard.txt").toString(), inventory, completed);
-            // Third sibling, in Blackwood's own piece numbering -- what BwSeedLoader can actually
-            // read as a future seed, same rationale as the GPU runner's own baseboard file.
-            Files.writeString(outputDir.resolve(prefix + "_baseboard.txt"), boardString);
             logger.info("Saved new personal best [depth-record]: {} pieces, {} conflicts -> {}, exact={}, budgetExhausted={}", maxSolveIndex, conflicts, prefix, exact, budgetExhausted);
             appendCompletedLink(prefix, conflicts, maxSolveIndex, completedLink);
             DriveUploader.uploadRecord(prefix, conflicts, completedLink, "Java-CPU");
@@ -662,6 +663,30 @@ public class BlackwoodSolver {
         } catch (IOException e) {
             logger.warn("Could not append to {}", COMPLETED_LINKS_LOG, e);
         }
+    }
+
+    /** The writes of one board's files; see {@link #claimAndWrite}. */
+    @FunctionalInterface
+    interface BoardWrite {
+        void run() throws IOException;
+    }
+
+    /**
+     * Marks {@code link} as saved in {@code saved} and runs {@code write}; returns false, writing nothing, when the board was marked before.
+     * The mark is taken first, and atomically, because several workers can reach the same board at once and only one of them may write it.
+     * It is given back when {@code write} fails (the failure is passed on): a board whose files never reached the disk must not stay
+     * remembered as saved, or finding it again would be skipped as a duplicate.
+     */
+    static boolean claimAndWrite(Set<String> saved, String link, BoardWrite write) throws IOException {
+        if (!saved.add(link)) return false;
+        boolean written = false;
+        try {
+            write.run();
+            written = true;
+        } finally {
+            if (!written) saved.remove(link);
+        }
+        return true;
     }
 
     private static int parseIntEnv(String name, int defaultValue) {
@@ -696,13 +721,22 @@ public class BlackwoodSolver {
         }
     }
 
-    private static int countConflicts(int[] board) {
+    /**
+     * Edge conflicts among all 256 cells of a hole-filled board: inner mismatches plus frame edges that are not grey. This is the
+     * label of a saved board (ErrorsNN_...); counting only the inner edges let hole-filling trade a frame violation for an inner
+     * gain and still save the board under the lower label. Eternity2_GPU's BlackwoodSolver has the same method (its runner uses it).
+     */
+    static int countConflicts(int[] board) {
         int conflicts = 0;
         for (int r = 0; r < 16; r++) {
             for (int c = 0; c < 16; c++) {
                 int i = r * 16 + c;
                 if (c < 15 && PieceUtils.getEast(board[i]) != PieceUtils.getWest(board[i + 1])) conflicts++;
                 if (r < 15 && PieceUtils.getSouth(board[i]) != PieceUtils.getNorth(board[i + 16])) conflicts++;
+                if (r == 0 && PieceUtils.getNorth(board[i]) != PieceUtils.BORDER_COLOR) conflicts++;
+                if (r == 15 && PieceUtils.getSouth(board[i]) != PieceUtils.BORDER_COLOR) conflicts++;
+                if (c == 0 && PieceUtils.getWest(board[i]) != PieceUtils.BORDER_COLOR) conflicts++;
+                if (c == 15 && PieceUtils.getEast(board[i]) != PieceUtils.BORDER_COLOR) conflicts++;
             }
         }
         return conflicts;
