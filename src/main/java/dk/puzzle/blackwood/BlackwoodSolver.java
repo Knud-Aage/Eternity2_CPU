@@ -115,6 +115,12 @@ public class BlackwoodSolver {
             new HintPin(208, 13, 2, 3),  // 0 deg -- was 2 (270 deg)
             new HintPin(255, 13, 13, 3));// 0 deg -- was 2 (270 deg)
 
+    /** The rotation index {@link #HINT_PINS} keeps for a clue piece; the hint tables in prepare() are built from it. */
+    private static int pinRotation(int pieceNumber) {
+        return HINT_PINS.stream().filter(h -> h.pieceNumber() == pieceNumber).findFirst()
+                .orElseThrow(() -> new IllegalStateException("No hint pin for piece " + pieceNumber)).rotation();
+    }
+
     /**
      * Eighteen (piece, cell, rotation) placements proven impossible under the strict-five-clue
      * regime by exhaustive SAT/DRAT certificate: Horvath, "Eighteen Certified Impossible
@@ -309,7 +315,14 @@ public class BlackwoodSolver {
         middlesNoBreak = buildTable(middlePieces, false, null, freshTableRandom(rand));
         southStart = buildTable(middlePieces, false, rp -> rp.topSide() == 6, freshTableRandom(rand));
         westStart = buildTable(middlePieces, false, rp -> rp.rightSide() == 11, freshTableRandom(rand));
-        start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == 2, freshTableRandom(rand));
+        // The clue rotations are read from HINT_PINS, the one place they are kept. They used to be typed in here a second time
+        // (2 for 139, 208, 255 and 181, 3 for 249) and so missed the 2026-09-06 correction of HINT_PINS (3, 3, 3, 0 for 208, 255, 181, 249).
+        int rotation139 = pinRotation(139);
+        int rotation208 = pinRotation(208);
+        int rotation255 = pinRotation(255);
+        int rotation181 = pinRotation(181);
+        int rotation249 = pinRotation(249);
+        start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == rotation139, freshTableRandom(rand));
         // All four non-center hints get allowBreaks=true (see BwUtil.HINT_BREAK_INDEXES) -- 208
         // and 255 first (2026-09-02), 181 and 249 added 2026-09-04 after 181 turned out to be the
         // ACTUAL fill-step-34 hint (208 is really at step 188, 255 at 247 -- see BwUtil's
@@ -317,10 +330,10 @@ public class BlackwoodSolver {
         // better explanation for the population bottlenecking at 34 than anything about 208. Only
         // start (139, the mandatory center) stays a hard pin -- it predates the whole hint feature
         // and has never shown this problem.
-        hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == 2, freshTableRandom(rand));
-        hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == 2, freshTableRandom(rand));
-        hint181 = buildTable(List.of(hintPiece.apply(181)), true, rp -> rp.rotations() == 2, freshTableRandom(rand));
-        hint249 = buildTable(List.of(hintPiece.apply(249)), true, rp -> rp.rotations() == 3, freshTableRandom(rand));
+        hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == rotation208, freshTableRandom(rand));
+        hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == rotation255, freshTableRandom(rand));
+        hint181 = buildTable(List.of(hintPiece.apply(181)), true, rp -> rp.rotations() == rotation181, freshTableRandom(rand));
+        hint249 = buildTable(List.of(hintPiece.apply(249)), true, rp -> rp.rotations() == rotation249, freshTableRandom(rand));
 
         if (corners[0] == null || corners[0].length == 0) {
             throw new IllegalStateException("corners[0] is empty -- no corner piece qualifies for LeftBottom=0; step-0 seeding would fail.");

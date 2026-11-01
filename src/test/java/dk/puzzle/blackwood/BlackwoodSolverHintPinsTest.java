@@ -97,12 +97,12 @@ class BlackwoodSolverHintPinsTest {
 
     @Test
     void hint208PinIsBreakTolerant() {
-        assertBreakTolerantPin(solver.hint208, 208, 2);
+        assertBreakTolerantPin(solver.hint208, 208, 3); // 0 deg -- 2026-09-06 correction, was 2 (270 deg)
     }
 
     @Test
     void hint255PinIsBreakTolerant() {
-        assertBreakTolerantPin(solver.hint255, 255, 2);
+        assertBreakTolerantPin(solver.hint255, 255, 3); // 0 deg -- was 2 (270 deg)
     }
 
     @Test
@@ -110,12 +110,12 @@ class BlackwoodSolverHintPinsTest {
         // 2026-09-04: this is the hint actually reached at fill-step 34 (verified against the
         // live masterPieceLookup) -- the earlier {34, 45} comment describing this as hint208's
         // territory was wrong; see BwUtil.HINT_BREAK_INDEXES for the correction.
-        assertBreakTolerantPin(solver.hint181, 181, 2);
+        assertBreakTolerantPin(solver.hint181, 181, 3); // 0 deg -- was 2 (270 deg)
     }
 
     @Test
     void hint249PinIsBreakTolerant() {
-        assertBreakTolerantPin(solver.hint249, 249, 3);
+        assertBreakTolerantPin(solver.hint249, 249, 0); // 90 deg -- was 3 (0 deg)
     }
 
     @Test
