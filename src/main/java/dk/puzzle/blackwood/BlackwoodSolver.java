@@ -58,7 +58,12 @@ public class BlackwoodSolver {
     // therefore won't actually get written to disk (see keepThreshold below), so this isn't
     // expected to reproduce the original flood. This repo only -- deliberately NOT ported to the
     // GPU/C# solvers this time.
-    private static final int DEFAULT_SAVE_THRESHOLD = 240;
+    //
+    // 2026-11-01: that 240 was a single constant, so it also applied WITHOUT hints, where it costs a 5000-trial HoleSolver run for every
+    // depth record from 240 to 247 (found by /code-review). It now follows the mode, see defaultSaveThreshold(): 248 without hints
+    // (the value this comment started from), 240 with the four clues.
+    private static final int NO_HINTS_SAVE_THRESHOLD = 248;
+    private static final int HINTS_SAVE_THRESHOLD = 240;
     // See BlackwoodGpuRunner's alwaysSaveAtOrBelow() (Eternity2_GPU repo) for the full rationale:
     // the save/retention window is normally "within 1 of best-on-disk", which tightens forever as
     // the record improves. This floor keeps results at or below it permanently save-worthy
@@ -228,7 +233,7 @@ public class BlackwoodSolver {
     private final AtomicLong exhaustedAtSeedCount = new AtomicLong();
 
     public BlackwoodSolver() {
-        this(DEFAULT_SAVE_THRESHOLD, defaultOutputDir(), defaultWorkerCount(), "src/main/resources/JBlackwood_Pieces.txt");
+        this(defaultSaveThreshold(), defaultOutputDir(), defaultWorkerCount(), "src/main/resources/JBlackwood_Pieces.txt");
     }
 
     public BlackwoodSolver(int saveThreshold, Path outputDir, int numWorkers, String piecesFilePath) {
@@ -246,6 +251,14 @@ public class BlackwoodSolver {
         // ~/EternitySolutions_GPU and the C# solver's ~/EternitySolutions_CSharpCPU, just with its
         // own suffix so provenance of any given save file is still unambiguous.
         return Path.of(System.getProperty("user.home"), "EternitySolutions_JavaCPU");
+    }
+
+    /**
+     * The depth from which a depth record is completed with HoleSolver and scored. A method, not a static final field, for the same
+     * reason as alwaysSaveAtOrBelow(): NON_CENTER_HINTS_ENABLED is declared further down and tests flip it after class-load.
+     */
+    static int defaultSaveThreshold() {
+        return NON_CENTER_HINTS_ENABLED ? HINTS_SAVE_THRESHOLD : NO_HINTS_SAVE_THRESHOLD;
     }
 
     private static int defaultWorkerCount() {
